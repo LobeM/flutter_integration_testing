@@ -41,3 +41,93 @@ workflows:
       - build/**/outputs/**/*.aab
       - build/**/outputs/**/mapping.txt
       - flutter_drive.log
+
+  ios-workflow:
+    name: iOS Workflow
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Get Flutter packages
+        script: |
+          flutter pub get
+      - name: Install CocoaPods dependencies
+        script: |
+          cd ios && pod install
+      - name: Run integration tests on iOS Simulator
+        script: |
+          set -ex
+          flutter emulators --launch apple_ios_simulator
+          for i in {1..30}; do
+            xcrun simctl list devices booted 2>/dev/null | grep -q Booted && break
+            sleep 2
+          done
+          flutter devices
+          flutter test integration_test/app_test.dart
+    artifacts:
+      - flutter_drive.log
+
+  integration-test-workflow:
+    name: Integration Test Workflow
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      groups:
+        - google_credentials
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      vars:
+        FIREBASE_PROJECT: "integration-test-ci-cd"
+    scripts:
+      - name: Get Flutter packages
+        script: |
+          flutter pub get
+
+      - name: Android - Build APK
+        script: |
+          flutter build apk --debug
+
+      - name: Android - Create debug and test APK
+        script: |
+          set -ex
+          cd android
+          ./gradlew app:assembleAndroidTest
+          ./gradlew app:assembleDebug -Ptarget="$CM_BUILD_DIR/integration_test/app_test.dart"
+
+      - name: Android - Run Firebase Test Lab Tests
+        script: |
+          set -ex
+          echo $GCLOUD_KEY_FILE | base64 --decode > ./gcloud_key_file.json
+          gcloud auth activate-service-account --key-file=./gcloud_key_file.json
+          gcloud --quiet config set project $FIREBASE_PROJECT
+
+          gcloud firebase test android run \
+            --type instrumentation \
+            --app build/app/outputs/apk/debug/app-debug.apk \
+            --test build/app/outputs/apk/androidTest/debug/app-debug-androidTest.apk \
+            --timeout 3m
+
+      - name: iOS - Install CocoaPods dependencies
+        script: |
+          cd ios && pod install
+
+      - name: iOS - Run integration tests on Simulator
+        script: |
+          set -ex
+          flutter emulators --launch apple_ios_simulator
+          for i in {1..30}; do
+            xcrun simctl list devices booted 2>/dev/null | grep -q Booted && break
+            sleep 2
+          done
+          flutter devices
+          flutter test integration_test/app_test.dart
+
+    artifacts:
+      - build/**/outputs/**/*.apk
+      - build/**/outputs/**/*.aab
+      - build/**/outputs/**/mapping.txt
+      - flutter_drive.log
